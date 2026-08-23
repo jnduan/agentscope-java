@@ -29,6 +29,7 @@ import com.github.victools.jsonschema.module.jackson.JacksonOption;
 import io.agentscope.core.tool.ToolSchemaModule;
 import java.lang.reflect.Type;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Utility class for JSON Schema operations.
@@ -55,7 +56,8 @@ import java.util.Map;
  *
  * <p>All public methods are thread-safe. Schema generation through the shared victools
  * {@code SchemaGenerator} is serialized by an internal lock, because the generator itself
- * is not designed for concurrent use.</p>
+ * is not designed for concurrent use. Generated schemas are cached per {@link Class}/{@link Type}
+ * so that the lock is only needed the first time a given class or type is seen.</p>
  *
  * @hidden
  */
@@ -68,9 +70,25 @@ public class JsonSchemaUtils {
     /**
      * Guards the shared victools {@link SchemaGenerator}, which is not thread-safe: its
      * JacksonModule keeps an unsynchronized introspection cache, so concurrent schema
-     * generation must be serialized.
+     * generation must be serialized. Only cache misses in {@link #CLASS_SCHEMA_CACHE} and
+     * {@link #TYPE_SCHEMA_CACHE} take this lock.
      */
     private static final Object SCHEMA_LOCK = new Object();
+
+    /**
+     * Caches the schema {@link JsonNode} generated for each class, since it is a deterministic
+     * function of the class and the static, never-changing generator config, so no invalidation
+     * is needed. Values are never mutated after being cached; every call still converts a fresh,
+     * independently mutable {@code Map} from the cached node. Unbounded, but keys are the
+     * compile-time-fixed structured-output and tool-parameter classes declared by application
+     * code, so the entry count is bounded by the (small, finite) set of classes the JVM loads for
+     * that purpose, not by request volume or untrusted input.
+     */
+    private static final Map<Class<?>, JsonNode> CLASS_SCHEMA_CACHE = new ConcurrentHashMap<>();
+
+    /** Same caching strategy and bound rationale as {@link #CLASS_SCHEMA_CACHE}, keyed by
+     * generic {@link Type}. */
+    private static final Map<Type, JsonNode> TYPE_SCHEMA_CACHE = new ConcurrentHashMap<>();
 
     static {
         // JacksonModule to support @JsonProperty, @JsonPropertyDescription annotations
@@ -106,10 +124,14 @@ public class JsonSchemaUtils {
      */
     public static Map<String, Object> generateSchemaFromClass(Class<?> clazz) {
         try {
-            JsonNode schemaNode;
-            synchronized (SCHEMA_LOCK) {
-                schemaNode = schemaGenerator.generateSchema(clazz);
-            }
+            JsonNode schemaNode =
+                    CLASS_SCHEMA_CACHE.computeIfAbsent(
+                            clazz,
+                            c -> {
+                                synchronized (SCHEMA_LOCK) {
+                                    return schemaGenerator.generateSchema(c);
+                                }
+                            });
             return JsonUtils.getJsonCodec()
                     .convertValue(schemaNode, new TypeReference<Map<String, Object>>() {});
         } catch (Exception e) {
@@ -144,10 +166,14 @@ public class JsonSchemaUtils {
      */
     public static Map<String, Object> generateSchemaFromType(Type type) {
         try {
-            JsonNode schemaNode;
-            synchronized (SCHEMA_LOCK) {
-                schemaNode = schemaGenerator.generateSchema(type);
-            }
+            JsonNode schemaNode =
+                    TYPE_SCHEMA_CACHE.computeIfAbsent(
+                            type,
+                            t -> {
+                                synchronized (SCHEMA_LOCK) {
+                                    return schemaGenerator.generateSchema(t);
+                                }
+                            });
             return JsonUtils.getJsonCodec()
                     .convertValue(schemaNode, new TypeReference<Map<String, Object>>() {});
         } catch (Exception e) {

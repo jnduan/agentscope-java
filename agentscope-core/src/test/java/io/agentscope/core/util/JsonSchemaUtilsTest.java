@@ -150,6 +150,52 @@ class JsonSchemaUtilsTest {
     }
 
     @Test
+    void testGenerateSchemaFromClassRepeatedCallsReturnEqualIndependentMaps() {
+        Map<String, Object> first = JsonSchemaUtils.generateSchemaFromClass(SimpleModel.class);
+        Map<String, Object> second = JsonSchemaUtils.generateSchemaFromClass(SimpleModel.class);
+
+        assertEquals(first, second);
+
+        // Mutating a schema returned from one call must not leak into a later call, matching
+        // callers (e.g. ToolSchemaGenerator) that mutate the returned map in place.
+        first.put("description", "mutated");
+        assertTrue(!second.containsKey("description"));
+
+        Map<String, Object> third = JsonSchemaUtils.generateSchemaFromClass(SimpleModel.class);
+        assertTrue(!third.containsKey("description"));
+        assertEquals(second, third);
+    }
+
+    @Test
+    void testGenerateSchemaFromTypeRepeatedCallsReturnEqualIndependentMaps() {
+        Type listType = new TypeReference<List<String>>() {}.getType();
+
+        Map<String, Object> first = JsonSchemaUtils.generateSchemaFromType(listType);
+        Map<String, Object> second = JsonSchemaUtils.generateSchemaFromType(listType);
+
+        assertEquals(first, second);
+
+        first.put("description", "mutated");
+        assertTrue(!second.containsKey("description"));
+
+        Map<String, Object> third = JsonSchemaUtils.generateSchemaFromType(listType);
+        assertTrue(!third.containsKey("description"));
+        assertEquals(second, third);
+    }
+
+    @Test
+    void testGenerateSchemaFromClassNullThrowsNullPointerException() {
+        assertThrows(
+                NullPointerException.class, () -> JsonSchemaUtils.generateSchemaFromClass(null));
+    }
+
+    @Test
+    void testGenerateSchemaFromTypeNullThrowsNullPointerException() {
+        assertThrows(
+                NullPointerException.class, () -> JsonSchemaUtils.generateSchemaFromType(null));
+    }
+
+    @Test
     void testGenerateSchemaFromType() {
         // Test List<String>
         Type listType = new TypeReference<List<String>>() {}.getType();
